@@ -1,0 +1,10 @@
+# Build artifacts
+*.exe
+*.obj
+*.o
+*.out
+
+# Benchmark outputs
+results*.csv
+*_threads_vs_time.png
+*_threads_vs_speedup.png
