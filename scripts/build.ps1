@@ -7,5 +7,5 @@ $sources = @(
     "task/workloads.cpp"
 )
 
-g++ -std=c++17 -O2 -Wall -Wextra -I. $sources -o hybrid_scheduler.exe
+g++ -std=c++17 -O2 -Wall -Wextra -fopenmp -I. $sources -o hybrid_scheduler.exe
 Write-Host "Built hybrid_scheduler.exe"
