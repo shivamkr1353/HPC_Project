@@ -33,6 +33,7 @@ struct BenchmarkSpec {
     std::string name;
     std::string problem_size;
     std::function<std::string(Scheduler&)> run;
+    std::function<std::string(std::size_t)> run_openmp;
 };
 
 struct CsvRow {
@@ -219,6 +220,9 @@ int main(int argc, char** argv) {
             [&options](Scheduler& scheduler) {
                 return std::to_string(hybrid::run_parallel_merge_sort(scheduler, options.merge_size));
             },
+            [&options](std::size_t threads) {
+                return std::to_string(hybrid::run_openmp_parallel_merge_sort(options.merge_size, threads));
+            },
         },
         {
             "MatrixMul",
@@ -229,12 +233,21 @@ int main(int argc, char** argv) {
                        << hybrid::run_matrix_multiplication(scheduler, options.matrix_size);
                 return stream.str();
             },
+            [&options](std::size_t threads) {
+                std::ostringstream stream;
+                stream << std::fixed << std::setprecision(6)
+                       << hybrid::run_openmp_matrix_multiplication(options.matrix_size, threads);
+                return stream.str();
+            },
         },
         {
             "Fibonacci",
             "n=" + std::to_string(options.fib_n),
             [&options](Scheduler& scheduler) {
                 return std::to_string(hybrid::run_recursive_fibonacci(scheduler, options.fib_n));
+            },
+            [&options](std::size_t threads) {
+                return std::to_string(hybrid::run_openmp_recursive_fibonacci(options.fib_n, threads));
             },
         },
     };
@@ -275,6 +288,35 @@ int main(int argc, char** argv) {
                 rows.push_back(row);
                 print_row(row);
             }
+        }
+
+        for (std::size_t threads : options.thread_counts) {
+            const auto start = std::chrono::steady_clock::now();
+            std::string validation = benchmark.run_openmp(threads);
+            const auto finish = std::chrono::steady_clock::now();
+            const double execution_ms =
+                std::chrono::duration<double, std::milli>(finish - start).count();
+            const double speedup = baselines_ms[benchmark.name] / execution_ms;
+            const double efficiency = speedup / static_cast<double>(std::max<std::size_t>(1, threads));
+
+            CsvRow row;
+            row.workload = benchmark.name;
+            row.mode = "OpenMP";
+            row.threads = threads;
+            row.problem_size = benchmark.problem_size;
+            row.execution_ms = execution_ms;
+            row.speedup = speedup;
+            row.efficiency = efficiency;
+            row.steals = 0;
+            row.shares = 0;
+            row.idle_ms_per_worker = "";
+            row.policy = "OpenMP";
+            row.steal_rate_per_ms = 0.0;
+            row.creation_rate_per_ms = 0.0;
+            row.validation = validation;
+
+            rows.push_back(row);
+            print_row(row);
         }
     }
 

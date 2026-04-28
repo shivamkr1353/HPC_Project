@@ -6,6 +6,7 @@
 #include <random>
 #include <utility>
 #include <vector>
+#include <omp.h>
 
 namespace hybrid {
 namespace {
@@ -204,6 +205,137 @@ double run_matrix_multiplication(Scheduler& scheduler, std::size_t matrix_size) 
 
     for (auto& future : futures) {
         scheduler.await(future);
+    }
+
+    double checksum = 0.0;
+    for (std::size_t row = 0; row < matrix_size; ++row) {
+        checksum += matrix_c[row * matrix_size + (row % matrix_size)];
+    }
+    return checksum;
+}
+
+std::uint64_t openmp_fibonacci_impl(int n, std::size_t depth) {
+    constexpr int kSequentialCutoff = 18;
+    constexpr std::size_t kDepthCutoff = 12;
+
+    if (n < 2) {
+        return static_cast<std::uint64_t>(n);
+    }
+    if (n <= kSequentialCutoff || depth >= kDepthCutoff) {
+        return sequential_fibonacci(n);
+    }
+
+    std::uint64_t left_value, right_value;
+    #pragma omp task shared(left_value)
+    left_value = openmp_fibonacci_impl(n - 1, depth + 1);
+
+    right_value = openmp_fibonacci_impl(n - 2, depth + 1);
+
+    #pragma omp taskwait
+    return left_value + right_value;
+}
+
+std::uint64_t run_openmp_recursive_fibonacci(int n, std::size_t thread_count) {
+    omp_set_num_threads(static_cast<int>(thread_count));
+    std::uint64_t result = 0;
+    #pragma omp parallel
+    {
+        #pragma omp single
+        result = openmp_fibonacci_impl(n, 0);
+    }
+    return result;
+}
+
+std::uint64_t run_openmp_parallel_merge_sort(std::size_t element_count, std::size_t thread_count) {
+    omp_set_num_threads(static_cast<int>(thread_count));
+    std::mt19937 generator(42);
+    std::uniform_int_distribution<int> distribution(0, 1'000'000);
+
+    std::vector<int> data(element_count);
+    for (auto& value : data) {
+        value = distribution(generator);
+    }
+
+    std::vector<int> buffer(element_count);
+    const std::size_t chunk_count =
+        std::max<std::size_t>(1, std::min<std::size_t>(thread_count * 2,
+                                                        std::max<std::size_t>(1, element_count / 2048)));
+    const std::size_t chunk_size = (element_count + chunk_count - 1) / chunk_count;
+
+    #pragma omp parallel for
+    for (std::size_t i = 0; i < chunk_count; ++i) {
+        std::size_t start = i * chunk_size;
+        std::size_t end = std::min(start + chunk_size, element_count);
+        if (start < element_count) {
+            std::sort(data.begin() + start, data.begin() + end);
+        }
+    }
+
+    std::size_t merge_width = chunk_size;
+    while (merge_width < element_count) {
+        auto* source = &data;
+        auto* destination = &buffer;
+
+        const std::size_t num_merges = (element_count + merge_width * 2 - 1) / (merge_width * 2);
+
+        #pragma omp parallel for
+        for (std::size_t i = 0; i < num_merges; ++i) {
+            std::size_t start = i * merge_width * 2;
+            std::size_t middle = std::min(start + merge_width, element_count);
+            std::size_t end = std::min(start + merge_width * 2, element_count);
+
+            if (start < element_count) {
+                std::merge(source->begin() + static_cast<long long>(start),
+                           source->begin() + static_cast<long long>(middle),
+                           source->begin() + static_cast<long long>(middle),
+                           source->begin() + static_cast<long long>(end),
+                           destination->begin() + static_cast<long long>(start));
+            }
+        }
+
+        data.swap(buffer);
+        merge_width *= 2;
+    }
+
+    return rolling_hash(data);
+}
+
+double run_openmp_matrix_multiplication(std::size_t matrix_size, std::size_t thread_count) {
+    omp_set_num_threads(static_cast<int>(thread_count));
+    const std::size_t cell_count = matrix_size * matrix_size;
+    std::vector<double> matrix_a(cell_count);
+    std::vector<double> matrix_b(cell_count);
+    std::vector<double> matrix_c(cell_count, 0.0);
+
+    for (std::size_t row = 0; row < matrix_size; ++row) {
+        for (std::size_t column = 0; column < matrix_size; ++column) {
+            matrix_a[row * matrix_size + column] =
+                static_cast<double>(((row + 1) * (column + 3)) % 19) / 19.0;
+            matrix_b[row * matrix_size + column] =
+                static_cast<double>(((row * 7) + (column * 5) + 11) % 23) / 23.0;
+        }
+    }
+
+    constexpr std::size_t kTile = 32;
+
+    #pragma omp parallel for collapse(2)
+    for (std::size_t ii = 0; ii < matrix_size; ii += kTile) {
+        for (std::size_t kk = 0; kk < matrix_size; kk += kTile) {
+            std::size_t ii_end = std::min(ii + kTile, matrix_size);
+            std::size_t kk_end = std::min(kk + kTile, matrix_size);
+            for (std::size_t jj = 0; jj < matrix_size; jj += kTile) {
+                std::size_t jj_end = std::min(jj + kTile, matrix_size);
+                for (std::size_t i = ii; i < ii_end; ++i) {
+                    for (std::size_t k = kk; k < kk_end; ++k) {
+                        double a_value = matrix_a[i * matrix_size + k];
+                        for (std::size_t j = jj; j < jj_end; ++j) {
+                            matrix_c[i * matrix_size + j] +=
+                                a_value * matrix_b[k * matrix_size + j];
+                        }
+                    }
+                }
+            }
+        }
     }
 
     double checksum = 0.0;
